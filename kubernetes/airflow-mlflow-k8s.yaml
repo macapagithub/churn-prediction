@@ -1,0 +1,159 @@
+# 1. Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: airflow-mlflow
+---
+# 2. Deployment for Airflow Webserver
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: airflow-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-webserver
+  template:
+    metadata:
+      labels:
+        app: airflow-webserver
+    spec:
+      containers:
+        - name: airflow-webserver
+          image: apache/airflow:2.6.3
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: "LocalExecutor"
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "sqlite:////root/airflow/airflow.db"
+          command: ["airflow", "webserver"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: dags-volume
+              mountPath: /opt/airflow/dags
+            - name: logs-volume
+              mountPath: /opt/airflow/logs
+            - name: plugins-volume
+              mountPath: /opt/airflow/plugins
+      volumes:
+        - name: dags-volume
+          hostPath:
+            # local path for DAGs
+            path: /path/local//dags
+        - name: logs-volume
+          hostPath:
+            # local path for logs
+            path: /path/local//logs
+        - name: plugins-volume
+          hostPath:
+            # local path for plugins
+            path: /path/local//plugins
+---
+# 3. Service for Airflow Webserver
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver-service
+  namespace: airflow-mlflow
+spec:
+  selector:
+    app: airflow-webserver
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: NodePort
+---
+# 4. Deployment for Airflow Scheduler
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: airflow-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow-scheduler
+    spec:
+      containers:
+        - name: airflow-scheduler
+          image: apache/airflow:2.6.3
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: "LocalExecutor"
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "sqlite:////root/airflow/airflow.db"
+          command: ["airflow", "scheduler"]
+          volumeMounts:
+            - name: dags-volume
+              mountPath: /opt/airflow/dags
+            - name: logs-volume
+              mountPath: /opt/airflow/logs
+            - name: plugins-volume
+              mountPath: /opt/airflow/plugins
+      volumes:
+        - name: dags-volume
+          hostPath:
+            path: /path/local/dags
+        - name: logs-volume
+          hostPath:
+            path: /path/local/logs
+        - name: plugins-volume
+          hostPath:
+            path: /path/local/plugins
+---
+# 5. Deployment for MLflow
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: airflow-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: my-mlflow:latest
+          command: ["mlflow", "ui", "--host", "0.0.0.0"]
+          ports:
+            - containerPort: 5000
+          volumeMounts:
+            - name: mlruns-volume
+              mountPath: /mlflow/mlruns
+      volumes:
+        - name: mlruns-volume
+          hostPath:
+            # path experiment for MLflow
+            path: /path/local/mlruns
+---
+# 6. Service for MLflow
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+  namespace: airflow-mlflow
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - name: http
+      protocol: TCP
+      port: 5000
+      targetPort: 5000
+  type: NodePort

@@ -1,0 +1,165 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: ./Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:$POSTGRES_PASSWORD@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:$POSTGRES_PASSWORD@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://:redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: $FERNET_KEY # enviroment variable for Fernet Key
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth # Basic authentication (upgrade in production)
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ./plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD # enviroment variable
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      retries: 3
+      timeout: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins}
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins}
+        airflow db init
+        airflow users create --username airflow --password $AIRFLOW_WWW_USER_PASSWORD --role Admin # Crear usuario admin
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW_WWW_USER_PASSWORD: $AIRFLOW_WWW_USER_PASSWORD # enviroment variable
+    user: "0:0"
+    volumes:
+      - .:/opt/airflow
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: "minio_user"
+      MINIO_ROOT_PASSWORD: $MINIO_ROOT_PASSWORD # enviroment variable
+    healthcheck:
+      test: timeout 5s bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1
+      interval: 1s
+      timeout: 10s
+      retries: 5
+    command: server /data --console-address ":9001"
+
+  minio-create-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+      mc alias set minio http://minio:9000 minio_user $MINIO_ROOT_PASSWORD &&
+      if ! mc ls minio/mlflow; then
+        mc mb minio/mlflow
+      else
+        echo 'bucket already exists'
+      fi
+      "
+
+  # mlflow:
+  #   image: mlflow/mlflow:2.20.2
+  #   command: >
+  #     mlflow server --backend-store-uri postgresql://airflow:$POSTGRES_PASSWORD@postgres/airflow --default-artifact-root s3://mlflow --host 0.0.0.0 --port 5000
+  #   ports:
+  #     - "5000:5000"
+  #   environment:
+  #     MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+  #     AWS_ACCESS_KEY_ID: minio_user
+  #     AWS_SECRET_ACCESS_KEY: $MINIO_ROOT_PASSWORD # enviroment variable
+  #   healthcheck:
+  #     test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
+  #     interval: 30s
+  #     timeout: 20s
+  #     retries: 3
+  #   restart: unless-stopped
+  #   depends_on:
+  #     minio-create-bucket:
+  #       condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:
+  minio-data:
+
+
