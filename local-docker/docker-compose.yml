@@ -7,8 +7,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:$POSTGRES_PASSWORD@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:$POSTGRES_PASSWORD@postgres/airflow
-    AIRFLOW__CELERY__BROKER_URL: redis://:redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: $FERNET_KEY # enviroment variable for Fernet Key
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: '' #$FERNET_KEY # enviroment variable for Fernet Key
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth # Basic authentication (upgrade in production)
@@ -98,8 +98,16 @@ services:
       - |
         mkdir -p /opt/airflow/{logs,dags,plugins}
         chown -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins}
-        airflow db init
-        airflow users create --username airflow --password $AIRFLOW_WWW_USER_PASSWORD --role Admin # Crear usuario admin
+        airflow db migrate
+        echo "Creating admin user..."
+        airflow users create \
+        --username airflow \
+        --password $AIRFLOW_WWW_USER_PASSWORD \
+        --role Admin \
+        --email $EMAIL_ADMIN \
+        --firstname macapa \
+        --lastname User
+        echo "Airflow init completed."
         exec /entrypoint airflow version
     environment:
       <<: *airflow-common-env
