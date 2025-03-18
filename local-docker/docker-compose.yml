@@ -37,6 +37,7 @@ services:
       - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U airflow"]
+      start_period: 15s
       interval: 5s
       retries: 3
       timeout: 5s
@@ -98,6 +99,12 @@ services:
       - |
         mkdir -p /opt/airflow/{logs,dags,plugins}
         chown -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins}
+        # Wati until postgres is ready
+        until pg_isready -U airflow -h postgres -p 5432; do
+          echo "Waiting for Postgres..."
+          sleep 5
+        done
+
         airflow db migrate
         echo "Creating admin user..."
         airflow users create \
@@ -108,66 +115,121 @@ services:
         --firstname macapa \
         --lastname User
         echo "Airflow init completed."
-        exec /entrypoint airflow version
+        airflow version #exec /entrypoint airflow version
     environment:
       <<: *airflow-common-env
-      AIRFLOW_WWW_USER_PASSWORD: $AIRFLOW_WWW_USER_PASSWORD # enviroment variable
-    user: "0:0"
+      AIRFLOW_WWW_USER_PASSWORD: $AIRFLOW_WWW_USER_PASSWORD
     volumes:
       - .:/opt/airflow
 
+
   minio:
     image: minio/minio
+    container_name: mlflow_minio
     ports:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: "minio_user"
-      MINIO_ROOT_PASSWORD: $MINIO_ROOT_PASSWORD # enviroment variable
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     healthcheck:
-      test: timeout 5s bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1
-      interval: 1s
-      timeout: 10s
-      retries: 5
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
     command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    # networks:
+    #   - airflow-mlflow-network
+    restart: unless-stopped
 
-  minio-create-bucket:
+  minio-setup:
     image: minio/mc
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY}
     entrypoint: >
-      bash -c "
-      mc alias set minio http://minio:9000 minio_user $MINIO_ROOT_PASSWORD &&
-      if ! mc ls minio/mlflow; then
-        mc mb minio/mlflow
+      /bin/sh -c "
+      sleep 5 &&
+      mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+      if ! mc ls myminio/mlflow; then
+        mc mb myminio/mlflow
       else
-        echo 'bucket already exists'
+        echo 'bucket mlflow already exists'
+      fi &&
+      if ! mc ls myminio/data; then
+        mc mb myminio/data
+      else
+        echo 'bucket data already exists'
       fi
       "
 
-  # mlflow:
-  #   image: mlflow/mlflow:2.20.2
-  #   command: >
-  #     mlflow server --backend-store-uri postgresql://airflow:$POSTGRES_PASSWORD@postgres/airflow --default-artifact-root s3://mlflow --host 0.0.0.0 --port 5000
-  #   ports:
-  #     - "5000:5000"
-  #   environment:
-  #     MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-  #     AWS_ACCESS_KEY_ID: minio_user
-  #     AWS_SECRET_ACCESS_KEY: $MINIO_ROOT_PASSWORD # enviroment variable
-  #   healthcheck:
-  #     test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
-  #     interval: 30s
-  #     timeout: 20s
-  #     retries: 3
-  #   restart: unless-stopped
-  #   depends_on:
-  #     minio-create-bucket:
-  #       condition: service_completed_successfully
+  mlflowdb:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_MLFLOW}
+      POSTGRES_DB: mlflow
+    volumes:
+      - mlflowdb-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      start_period: 15s
+      interval: 5s
+      retries: 3
+      timeout: 5s
+    restart: unless-stopped
+
+  tracking_server:
+    #image: ghcr.io/mlflow/mlflow:v2.21.0
+    build:
+      context: .
+      dockerfile: ./mlflow/Dockerfile.tracking_server
+    ports:
+      - "5000:5000"
+       
+    environment:
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_ACCESS_KEY}
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:${MINIO_PORT}
+      - MLFLOW_S3_IGNORE_TLS=true
+    command: > #postgres(airflow) database 
+      mlflow server 
+      --backend-store-uri 
+      postgresql://mlflow:${POSTGRES_PASSWORD_MLFLOW}@mlflowdb/mlflow  
+      --host 0.0.0.0 
+      --port 5000
+      --serve-artifacts
+      --artifacts-destination s3://${MINIO_BUCKET_NAME}
+   
+    # command: > #local database
+    #   mlflow ui 
+    #   --port 8080 
+    #   --backend-store-uri 
+    #   sqlite:///mlruns.db
+
+
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+
 
 volumes:
   postgres-db-volume:
   minio-data:
+  mlflowdb-volume:
 
 
