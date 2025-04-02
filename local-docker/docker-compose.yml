@@ -169,21 +169,21 @@ services:
       fi
       "
 
-  mlflowdb:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: mlflow
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_MLFLOW}
-      POSTGRES_DB: mlflow
-    volumes:
-      - mlflowdb-volume:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
-      start_period: 15s
-      interval: 5s
-      retries: 3
-      timeout: 5s
-    restart: unless-stopped
+  # mlflowdb:
+  #   image: postgres:15-alpine
+  #   environment:
+  #     POSTGRES_USER: mlflow
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_MLFLOW}
+  #     POSTGRES_DB: mlflow
+  #   volumes:
+  #     - mlflowdb-volume:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+  #     start_period: 15s
+  #     interval: 5s
+  #     retries: 3
+  #     timeout: 5s
+  #   restart: unless-stopped
 
   tracking_server:
     #image: ghcr.io/mlflow/mlflow:v2.21.0
@@ -198,21 +198,23 @@ services:
       - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_ACCESS_KEY}
       - MLFLOW_S3_ENDPOINT_URL=http://minio:${MINIO_PORT}
       - MLFLOW_S3_IGNORE_TLS=true
-    command: > #postgres(airflow) database 
+      
+    # command: > #postgres database
+    #   mlflow server 
+    #   --backend-store-uri 
+    #   postgresql://mlflow:${POSTGRES_PASSWORD_MLFLOW}@mlflowdb/mlflow  
+    #   --host 0.0.0.0 
+    #   --port 500
+    #   --serve-artifacts
+    #   --artifacts-destination s3://${MINIO_BUCKET_NAME}
+   
+    command: > #local database Sqlite
       mlflow server 
       --backend-store-uri 
-      postgresql://mlflow:${POSTGRES_PASSWORD_MLFLOW}@mlflowdb/mlflow  
+      sqlite:///mlruns.db
+      --artifacts-destination s3://${MINIO_BUCKET_NAME}
       --host 0.0.0.0 
       --port 5000
-      --serve-artifacts
-      --artifacts-destination s3://${MINIO_BUCKET_NAME}
-   
-    # command: > #local database
-    #   mlflow ui 
-    #   --port 8080 
-    #   --backend-store-uri 
-    #   sqlite:///mlruns.db
-
 
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
@@ -226,10 +228,8 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
-
 volumes:
   postgres-db-volume:
   minio-data:
-  mlflowdb-volume:
-
+  # mlflowdb-volume:
 
